@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::fmt::{self, write, Arguments, Debug};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
@@ -221,3 +221,164 @@ fn sizes() {
     dbg!(size_of::<ConstLru<(), (), 10, 20>>());
     dbg!(size_of::<ConstLru<u8, (), 128, 256>>());
 }
+
+pub trait Writeable {
+    fn write(self, into: &mut Vec<u8>);
+}
+
+impl Writeable for &str {
+    fn write(self, into: &mut Vec<u8>) {
+        unsafe {
+            copy(self, into);
+        }
+    }
+}
+
+impl Writeable for String {
+    fn write(self, into: &mut Vec<u8>) {
+        unsafe {
+            copy(self.as_str(), into);
+        }
+    }
+}
+
+impl Writeable for Arguments<'_> {
+    fn write(self, into: &mut Vec<u8>) {
+        struct Wrapper<'a>(&'a mut Vec<u8>);
+
+        impl<'a> fmt::Write for Wrapper<'a> {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
+                unsafe {
+                    copy(s, self.0);
+                }
+                Ok(())
+            }
+            fn write_char(&mut self, c: char) -> fmt::Result {
+                self.0.push(c as u8);
+                Ok(())
+            }
+        }
+
+        let _ = write(&mut Wrapper(into), self);
+    }
+}
+
+unsafe fn copy(s: &str, buf: &mut Vec<u8>) {
+    let old_len = s.len();
+    buf.reserve(s.len());
+    let ptr = buf.as_mut_ptr().add(old_len);
+    let bytes = s.as_bytes();
+    let str_ptr = bytes.as_ptr();
+    for o in 0..s.len() {
+        *ptr.add(o) = *str_ptr.add(o);
+    }
+    buf.set_len(old_len + s.len());
+}
+
+impl<F> Writeable for F
+where
+    F: FnOnce(&mut Vec<u8>),
+{
+    fn write(self, to: &mut Vec<u8>) {
+        self(to);
+    }
+}
+
+macro_rules! write_unsized {
+    ($t: ty) => {
+        impl Writeable for $t {
+            fn write(self, to: &mut Vec<u8>) {
+                let mut n = self;
+                let mut n2 = n;
+                let mut num_digits = 0;
+                while n2 > 0 {
+                    n2 /= 10;
+                    num_digits += 1;
+                }
+                let len = num_digits;
+                to.reserve(len);
+                let ptr = to.as_mut_ptr().cast::<u8>();
+                let old_len = to.len();
+                let mut i = len - 1;
+                loop {
+                    unsafe { ptr.add(old_len + i).write((n % 10) as u8 + b'0') }
+                    n /= 10;
+
+                    if n == 0 {
+                        break;
+                    } else {
+                        i -= 1;
+                    }
+                }
+
+                #[allow(clippy::uninit_vec)]
+                unsafe {
+                    to.set_len(old_len + (len - i));
+                }
+            }
+        }
+    };
+}
+
+macro_rules! write_sized {
+    ($t: ty) => {
+        impl Writeable for $t {
+            fn write(self, to: &mut Vec<u8>) {
+                let neg = self < 0;
+                let mut n = if neg {
+                    match self.checked_abs() {
+                        Some(n) => n,
+                        None => <$t>::MAX / 2 + 1,
+                    }
+                } else {
+                    self
+                };
+                let mut n2 = n;
+                let mut num_digits = 0;
+                while n2 > 0 {
+                    n2 /= 10;
+                    num_digits += 1;
+                }
+                let len = if neg { num_digits + 1 } else { num_digits };
+                to.reserve(len);
+                let ptr = to.as_mut_ptr().cast::<u8>();
+                let old_len = to.len();
+                let mut i = len - 1;
+                loop {
+                    unsafe { ptr.add(old_len + i).write((n % 10) as u8 + b'0') }
+                    n /= 10;
+
+                    if n == 0 {
+                        break;
+                    } else {
+                        i -= 1;
+                    }
+                }
+
+                if neg {
+                    i -= 1;
+                    unsafe { ptr.add(old_len + i).write(b'-') }
+                }
+
+                #[allow(clippy::uninit_vec)]
+                unsafe {
+                    to.set_len(old_len + (len - i));
+                }
+            }
+        }
+    };
+}
+
+write_unsized!(u8);
+write_unsized!(u16);
+write_unsized!(u32);
+write_unsized!(u64);
+write_unsized!(u128);
+write_unsized!(usize);
+
+write_sized!(i8);
+write_sized!(i16);
+write_sized!(i32);
+write_sized!(i64);
+write_sized!(i128);
+write_sized!(isize);
