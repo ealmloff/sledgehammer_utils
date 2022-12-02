@@ -222,11 +222,11 @@ fn sizes() {
     dbg!(size_of::<ConstLru<u8, (), 128, 256>>());
 }
 
-pub trait Writeable {
+pub trait Writable {
     fn write(self, into: &mut Vec<u8>);
 }
 
-impl Writeable for &str {
+impl Writable for &str {
     fn write(self, into: &mut Vec<u8>) {
         unsafe {
             copy(self, into);
@@ -234,7 +234,7 @@ impl Writeable for &str {
     }
 }
 
-impl Writeable for String {
+impl Writable for String {
     fn write(self, into: &mut Vec<u8>) {
         unsafe {
             copy(self.as_str(), into);
@@ -242,7 +242,7 @@ impl Writeable for String {
     }
 }
 
-impl Writeable for Arguments<'_> {
+impl Writable for Arguments<'_> {
     fn write(self, into: &mut Vec<u8>) {
         struct Wrapper<'a>(&'a mut Vec<u8>);
 
@@ -275,7 +275,7 @@ unsafe fn copy(s: &str, buf: &mut Vec<u8>) {
     buf.set_len(old_len + s.len());
 }
 
-impl<F> Writeable for F
+impl<F> Writable for F
 where
     F: FnOnce(&mut Vec<u8>),
 {
@@ -286,7 +286,7 @@ where
 
 macro_rules! write_unsized {
     ($t: ty) => {
-        impl Writeable for $t {
+        impl Writable for $t {
             fn write(self, to: &mut Vec<u8>) {
                 let mut n = self;
                 let mut n2 = n;
@@ -295,7 +295,7 @@ macro_rules! write_unsized {
                     n2 /= 10;
                     num_digits += 1;
                 }
-                let len = num_digits;
+                let len = num_digits.max(1);
                 to.reserve(len);
                 let ptr = to.as_mut_ptr().cast::<u8>();
                 let old_len = to.len();
@@ -322,7 +322,7 @@ macro_rules! write_unsized {
 
 macro_rules! write_sized {
     ($t: ty) => {
-        impl Writeable for $t {
+        impl Writable for $t {
             fn write(self, to: &mut Vec<u8>) {
                 let neg = self < 0;
                 let mut n = if neg {
@@ -339,6 +339,7 @@ macro_rules! write_sized {
                     n2 /= 10;
                     num_digits += 1;
                 }
+                num_digits = num_digits.max(1);
                 let len = if neg { num_digits + 1 } else { num_digits };
                 to.reserve(len);
                 let ptr = to.as_mut_ptr().cast::<u8>();
@@ -382,3 +383,29 @@ write_sized!(i32);
 write_sized!(i64);
 write_sized!(i128);
 write_sized!(isize);
+
+#[allow(unused)]
+fn to_string_testing<T: Writable>(t: T) -> String {
+    let mut buf = Vec::new();
+    t.write(&mut buf);
+    unsafe { String::from_utf8_unchecked(buf) }
+}
+
+#[test]
+fn fmt_nums() {
+    assert_eq!(to_string_testing(0u8), "0");
+    assert_eq!(to_string_testing(100u8), "100");
+    assert_eq!(to_string_testing(0u16), "0");
+    assert_eq!(to_string_testing(100u16), "100");
+    assert_eq!(to_string_testing(0u32), "0");
+    assert_eq!(to_string_testing(100u32), "100");
+    assert_eq!(to_string_testing(0i8), "0");
+    assert_eq!(to_string_testing(-100i8), "-100");
+    assert_eq!(to_string_testing(100i8), "100");
+    assert_eq!(to_string_testing(0i16), "0");
+    assert_eq!(to_string_testing(-100i16), "-100");
+    assert_eq!(to_string_testing(100i16), "100");
+    assert_eq!(to_string_testing(0i32), "0");
+    assert_eq!(to_string_testing(-100i32), "-100");
+    assert_eq!(to_string_testing(100i32), "100");
+}
