@@ -15,7 +15,6 @@ impl<T: Copy, const N: usize> RawTable<T, N> {
         let mut offset = 0;
         loop {
             let index = (hash as usize + offset) % N;
-            println!("index: {} {} {}", index, N, offset * offset);
             let val = unsafe { self.buckets.get_unchecked(index).as_ref() };
             if let Some(val) = val {
                 if eq(val) {
