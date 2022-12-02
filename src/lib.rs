@@ -242,6 +242,14 @@ impl Writable for String {
     }
 }
 
+impl Writable for &String {
+    fn write(self, into: &mut Vec<u8>) {
+        unsafe {
+            copy(self.as_str(), into);
+        }
+    }
+}
+
 impl Writable for Arguments<'_> {
     fn write(self, into: &mut Vec<u8>) {
         struct Wrapper<'a>(&'a mut Vec<u8>);
