@@ -1,18 +1,59 @@
-use hashbrown::raw::RawTable;
 use std::fmt::Debug;
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
-pub struct ConstLru<T, H, const N: usize> {
+struct RawTable<T, const N: usize> {
+    buckets: [Option<T>; N],
+}
+
+impl<T: Copy, const N: usize> RawTable<T, N> {
+    const fn new() -> Self {
+        Self { buckets: [None; N] }
+    }
+
+    fn get(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<&T> {
+        let mut offset = 0;
+        loop {
+            let index = (hash as usize + offset) % N;
+            println!("index: {} {} {}", index, N, offset * offset);
+            let val = unsafe { self.buckets.get_unchecked(index).as_ref() };
+            if let Some(val) = val {
+                if eq(val) {
+                    return Some(val);
+                }
+            } else {
+                return None;
+            }
+            offset += 1;
+        }
+    }
+
+    fn insert(&mut self, hash: u64, value: T) {
+        let mut offset = 0;
+        loop {
+            let index = (hash as usize + offset) % N;
+            let val = unsafe { self.buckets.get_unchecked_mut(index) };
+            if val.is_none() {
+                *val = Some(value);
+                return;
+            }
+            offset += 1;
+        }
+    }
+}
+
+pub struct ConstLru<T, H, const N: usize, const N2: usize> {
     entries: MaybeUninit<[Node<T>; N]>,
     free_after: u8,
     first: Option<u8>,
     last: Option<u8>,
-    table: RawTable<u8>,
+    table: RawTable<u8, N2>,
     hasher: H,
 }
 
-impl<T: Hash + PartialEq + Debug, H: BuildHasher, const N: usize> Debug for ConstLru<T, H, N> {
+impl<T: Hash + PartialEq + Debug, H: BuildHasher, const N: usize, const N2: usize> Debug
+    for ConstLru<T, H, N, N2>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConstLru")
             .field("entries", unsafe { self.entries.assume_init_ref() })
@@ -23,7 +64,7 @@ impl<T: Hash + PartialEq + Debug, H: BuildHasher, const N: usize> Debug for Cons
     }
 }
 
-impl<T: Hash + PartialEq, H: BuildHasher, const N: usize> ConstLru<T, H, N> {
+impl<T: Hash + PartialEq, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
     pub const fn new(hasher: H) -> Self {
         assert!(N < u8::MAX as usize);
         assert!(N > 0);
@@ -93,6 +134,7 @@ impl<T: Hash + PartialEq, H: BuildHasher, const N: usize> ConstLru<T, H, N> {
                 }
                 let idx = self.free_after;
                 self.free_after += 1;
+                self.table.insert(hash, idx);
                 idx
             } else {
                 let last = self.last.unwrap();
@@ -127,17 +169,6 @@ impl<T: Hash + PartialEq, H: BuildHasher, const N: usize> ConstLru<T, H, N> {
                 self.first = Some(last);
                 last
             };
-            self.table.insert(hash, idx, |ptr| {
-                let mut hasher = self.hasher.build_hasher();
-                unsafe {
-                    self.entries
-                        .assume_init_ref()
-                        .get_unchecked(*ptr as usize)
-                        .data
-                        .hash(&mut hasher);
-                }
-                hasher.finish()
-            });
             (idx, true)
         }
     }
@@ -155,7 +186,7 @@ fn push_2() {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::*;
     let hash_builder: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
-    let mut lru: ConstLru<_, _, 2> = ConstLru::new(hash_builder);
+    let mut lru: ConstLru<_, _, 2, 4> = ConstLru::new(hash_builder);
     assert_eq!(lru.push(0), (0, true));
     assert_eq!(lru.push(0), (0, false));
     assert_eq!(lru.push(1), (1, true));
@@ -169,7 +200,7 @@ fn push_100() {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::*;
     let hash_builder: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
-    let mut lru: ConstLru<_, _, 100> = ConstLru::new(hash_builder);
+    let mut lru: ConstLru<_, _, 100, 200> = ConstLru::new(hash_builder);
     for i in 0..100 {
         assert_eq!(lru.push(i), (i as u8, true));
     }
@@ -182,8 +213,11 @@ fn push_100() {
 fn sizes() {
     use std::mem::size_of;
 
-    dbg!(size_of::<RawTable<()>>());
+    dbg!(size_of::<RawTable<u8, 0>>());
+    dbg!(size_of::<RawTable<u8, 10>>());
+    dbg!(size_of::<RawTable<u8, 128>>());
     dbg!(size_of::<Node<()>>());
-    dbg!(size_of::<ConstLru<(), (), 0>>());
-    dbg!(size_of::<ConstLru<(), (), 10>>());
+    dbg!(size_of::<ConstLru<(), (), 0, 0>>());
+    dbg!(size_of::<ConstLru<(), (), 10, 20>>());
+    dbg!(size_of::<ConstLru<u8, (), 128, 256>>());
 }
