@@ -272,7 +272,7 @@ impl Writable for Arguments<'_> {
 }
 
 unsafe fn copy(s: &str, buf: &mut Vec<u8>) {
-    let old_len = s.len();
+    let old_len = buf.len();
     buf.reserve(s.len());
     let ptr = buf.as_mut_ptr().add(old_len);
     let bytes = s.as_bytes();
@@ -416,4 +416,27 @@ fn fmt_nums() {
     assert_eq!(to_string_testing(0i32), "0");
     assert_eq!(to_string_testing(-100i32), "-100");
     assert_eq!(to_string_testing(100i32), "100");
+}
+
+#[test]
+fn fmt_str() {
+    assert_eq!(to_string_testing("hello"), "hello");
+    assert_eq!(to_string_testing("hello world"), "hello world");
+    let mut buf = Vec::new();
+    "hello".write(&mut buf);
+    " world".write(&mut buf);
+    assert_eq!(unsafe { String::from_utf8_unchecked(buf) }, "hello world");
+}
+
+#[test]
+fn fmt_args() {
+    assert_eq!(to_string_testing(format_args!("hello")), "hello");
+    assert_eq!(
+        to_string_testing(format_args!("hello world")),
+        "hello world"
+    );
+    let mut buf = Vec::new();
+    format_args!("hello").write(&mut buf);
+    format_args!(" world").write(&mut buf);
+    assert_eq!(unsafe { String::from_utf8_unchecked(buf) }, "hello world");
 }
