@@ -234,6 +234,12 @@ impl Writable for &str {
     }
 }
 
+impl Writable for char {
+    fn write(self, into: &mut Vec<u8>) {
+        into.push(self as u8);
+    }
+}
+
 impl Writable for String {
     fn write(self, into: &mut Vec<u8>) {
         unsafe {
