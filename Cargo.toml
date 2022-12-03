@@ -3,7 +3,6 @@ name = "sledgehammer_utils"
 version = "0.1.0"
 edition = "2021"
 authors = ["Evan Almloff <ealmlof1@stumail.jccc.edu>"]
-edition = "2021"
 description = "Utilities for sledgehammer-bindgen"
 documentation = "https://docs.rs/sledgehammer_utils"
 repository = "https://github.com/demonthos/sledgehammer_utils/"
