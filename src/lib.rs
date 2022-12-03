@@ -2,6 +2,11 @@ use std::fmt::{self, write, Arguments, Debug};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
 
+pub use lru;
+pub use once_cell;
+pub use rustc_hash;
+pub use ux;
+
 struct RawTable<T, const N: usize> {
     buckets: [Option<T>; N],
 }
