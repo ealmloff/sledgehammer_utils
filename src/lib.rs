@@ -1,11 +1,42 @@
 use std::fmt::{self, write, Arguments, Debug};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 
 pub use lru;
 pub use once_cell;
 pub use rustc_hash;
 pub use ux;
+
+pub struct LruCache {
+    inner: lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
+}
+
+impl Default for LruCache {
+    fn default() -> Self {
+        let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
+        Self {
+            inner: lru::LruCache::with_hasher(
+                std::num::NonZeroUsize::new(128).unwrap(),
+                build_hasher,
+            ),
+        }
+    }
+}
+
+impl Deref for LruCache {
+    type Target = lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for LruCache {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 struct RawTable<T, const N: usize> {
     buckets: [Option<T>; N],
@@ -53,6 +84,14 @@ pub struct ConstLru<T, H, const N: usize, const N2: usize> {
     last: Option<u8>,
     table: RawTable<u8, N2>,
     hasher: H,
+}
+
+impl<T: Hash + PartialEq, H: BuildHasher + Default, const N: usize, const N2: usize> Default
+    for ConstLru<T, H, N, N2>
+{
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
 }
 
 impl<T: Hash + PartialEq + Debug, H: BuildHasher, const N: usize, const N2: usize> Debug
