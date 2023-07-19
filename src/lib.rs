@@ -6,7 +6,6 @@ use std::ops::{Deref, DerefMut};
 pub use lru;
 pub use once_cell;
 pub use rustc_hash;
-pub use ux;
 
 pub struct LruCache {
     inner: lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
