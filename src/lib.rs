@@ -1,5 +1,5 @@
 use std::fmt::{self, write, Arguments, Debug};
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{BuildHasher, Hash};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 
@@ -121,9 +121,7 @@ impl<T: Hash + PartialEq, H: BuildHasher, const N: usize, const N2: usize> Const
     }
 
     pub fn push(&mut self, val: T) -> (u8, bool) {
-        let mut hasher = self.hasher.build_hasher();
-        val.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = self.hasher.hash_one(&val);
         if let Some(entry) = self.table.get(hash, |ptr| unsafe {
             self.entries
                 .assume_init_ref()
