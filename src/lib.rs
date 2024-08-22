@@ -95,7 +95,7 @@ impl<T: Copy, const N: usize> RawTable<T, N> {
 }
 
 pub struct ConstLru<T, H, const N: usize, const N2: usize> {
-    entries: MaybeUninit<[Node<T>; N]>,
+    entries: [MaybeUninit<Node<T>>; N],
     free_after: u8,
     first: Option<u8>,
     last: Option<u8>,
@@ -116,7 +116,7 @@ impl<T: Hash + PartialEq + Debug, H: BuildHasher, const N: usize, const N2: usiz
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConstLru")
-            .field("entries", unsafe { self.entries.assume_init_ref() })
+            .field("entries", &self.entries)
             .field("free_after", &self.free_after)
             .field("first", &self.first)
             .field("last", &self.last)
@@ -129,7 +129,7 @@ impl<T, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
         assert!(N < u8::MAX as usize);
         assert!(N > 0);
         Self {
-            entries: MaybeUninit::uninit(),
+            entries: [const { MaybeUninit::uninit() }; N],
             free_after: 0,
             first: None,
             last: None,
@@ -145,28 +145,35 @@ impl<T, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
     {
         let hash = self.hasher.hash_one(borrowed);
         if let Some(entry) = self.table.get(hash, |ptr| unsafe {
-            self.entries
-                .assume_init_ref()
-                .get_unchecked(*ptr as usize)
-                .data
-                .borrow()
-                == borrowed
+            let entry = self.entries.get_unchecked(*ptr as usize).assume_init_ref();
+            entry.data.borrow() == borrowed
         }) {
             unsafe {
-                let raw_ptr = self.entries.as_mut_ptr();
-                let node = (*raw_ptr).get_unchecked_mut(*entry as usize);
+                let node = self
+                    .entries
+                    .get_unchecked_mut(*entry as usize)
+                    .assume_init_mut();
                 let next = node.next;
                 let prev = node.prev;
                 if let Some(next) = next {
-                    let next = (*raw_ptr).get_unchecked_mut(next as usize);
+                    let next = self
+                        .entries
+                        .get_unchecked_mut(next as usize)
+                        .assume_init_mut();
                     next.prev = prev;
                 }
                 if let Some(prev) = prev {
-                    let prev = (*raw_ptr).get_unchecked_mut(prev as usize);
+                    let prev = self
+                        .entries
+                        .get_unchecked_mut(prev as usize)
+                        .assume_init_mut();
                     prev.prev = next;
                 }
                 if let Some(old_first) = self.first {
-                    (*raw_ptr).get_unchecked_mut(old_first as usize).next = Some(*entry);
+                    self.entries
+                        .get_unchecked_mut(old_first as usize)
+                        .assume_init_mut()
+                        .next = Some(*entry);
                 }
                 self.first = Some(*entry);
                 (*entry, false)
@@ -174,21 +181,20 @@ impl<T, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
         } else {
             let idx = if self.free_after < N as u8 {
                 unsafe {
-                    *self
-                        .entries
-                        .assume_init_mut()
-                        .get_unchecked_mut(self.free_after as usize) = Node {
+                    let entry = self.entries.get_unchecked_mut(self.free_after as usize);
+                    entry.write(Node {
                         data: borrowed.to_owned(),
                         next: None,
                         prev: self.first,
-                    };
+                    });
                 }
                 if let Some(first) = self.first {
                     unsafe {
-                        self.entries
-                            .assume_init_mut()
+                        let first = self
+                            .entries
                             .get_unchecked_mut(first as usize)
-                            .next = Some(self.free_after);
+                            .assume_init_mut();
+                        first.next = Some(self.free_after);
                     }
                 }
                 self.first = Some(self.free_after);
@@ -203,8 +209,8 @@ impl<T, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
                 let last = self.last.unwrap();
                 let last_node = unsafe {
                     self.entries
-                        .assume_init_mut()
                         .get_unchecked_mut(last as usize)
+                        .assume_init_mut()
                 };
                 let new = Node {
                     data: borrowed.to_owned(),
@@ -215,24 +221,37 @@ impl<T, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
                 *last_node = new;
                 if let Some(last) = self.last {
                     unsafe {
-                        self.entries
-                            .assume_init_mut()
+                        let last = self
+                            .entries
                             .get_unchecked_mut(last as usize)
-                            .prev = None;
+                            .assume_init_mut();
+                        last.prev = None;
                     }
                 }
                 if let Some(first) = self.first {
                     unsafe {
-                        self.entries
-                            .assume_init_mut()
+                        let first = self
+                            .entries
                             .get_unchecked_mut(first as usize)
-                            .next = Some(last);
+                            .assume_init_mut();
+                        first.next = Some(last);
                     }
                 }
                 self.first = Some(last);
                 last
             };
             (idx, true)
+        }
+    }
+}
+
+impl<T, H, const N: usize, const N2: usize> Drop for ConstLru<T, H, N, N2> {
+    fn drop(&mut self) {
+        // Drop any entries that were allocated
+        for entry in self.entries.iter_mut().take(self.free_after as usize) {
+            unsafe {
+                entry.assume_init_drop();
+            }
         }
     }
 }
@@ -269,6 +288,22 @@ fn push_100() {
     }
     for i in 0..100 {
         assert_eq!(lru.push(&(i + 100)), (i as u8, true));
+    }
+}
+
+#[test]
+fn fuzzing() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::*;
+    let hash_builder: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
+    let mut lru: ConstLru<_, _, 100, 200> = ConstLru::new(hash_builder);
+    #[cfg(miri)]
+    let count = 1000;
+    #[cfg(not(miri))]
+    let count = 100_000;
+    for _ in 0..count {
+        let rand = rand::random::<u8>();
+        _ = lru.push(&rand.to_string());
     }
 }
 
