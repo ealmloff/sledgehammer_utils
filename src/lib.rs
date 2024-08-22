@@ -1,41 +1,59 @@
+use std::borrow::Borrow;
 use std::fmt::{self, write, Arguments, Debug};
 use std::hash::{BuildHasher, Hash};
 use std::mem::MaybeUninit;
-use std::ops::{Deref, DerefMut};
 
-pub use lru;
-pub use once_cell;
-pub use rustc_hash;
+#[derive(Default)]
+pub struct NonHashBuilder;
 
-pub struct LruCache {
-    inner: lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>,
-}
-
-impl Default for LruCache {
-    fn default() -> Self {
-        let build_hasher = std::hash::BuildHasherDefault::<rustc_hash::FxHasher>::default();
-        Self {
-            inner: lru::LruCache::with_hasher(
-                std::num::NonZeroUsize::new(128).unwrap(),
-                build_hasher,
-            ),
-        }
+impl std::hash::BuildHasher for NonHashBuilder {
+    type Hasher = NonHash;
+    fn build_hasher(&self) -> Self::Hasher {
+        NonHash(0)
     }
 }
 
-impl Deref for LruCache {
-    type Target = lru::LruCache<String, u8, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
+#[allow(unused)]
+#[derive(Default)]
+pub struct NonHash(u64);
 
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+impl std::hash::Hasher for NonHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, _: &[u8]) {
+        unreachable!()
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.0 = i as u64;
     }
 }
 
-impl DerefMut for LruCache {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+/// A pointer that is only used for hashing purposes
+#[derive(Debug, Copy, Clone)]
+pub struct StaticPtr(*const ());
+
+impl std::hash::Hash for StaticPtr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0, state);
     }
 }
+
+impl std::cmp::PartialEq for StaticPtr {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl<T: ?Sized> From<&'static T> for StaticPtr {
+    fn from(t: &'static T) -> Self {
+        StaticPtr(t as *const T as *const ())
+    }
+}
+
+pub type PtrConstLru<const N: usize, const N2: usize> = ConstLru<StaticPtr, NonHashBuilder, N, N2>;
+pub type FxConstLru<T, const N: usize, const N2: usize> =
+    ConstLru<T, std::hash::BuildHasherDefault<rustc_hash::FxHasher>, N, N2>;
 
 struct RawTable<T, const N: usize> {
     buckets: [Option<T>; N],
@@ -106,7 +124,7 @@ impl<T: Hash + PartialEq + Debug, H: BuildHasher, const N: usize, const N2: usiz
     }
 }
 
-impl<T: Hash + PartialEq, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
+impl<T, H: BuildHasher, const N: usize, const N2: usize> ConstLru<T, H, N, N2> {
     pub const fn new(hasher: H) -> Self {
         assert!(N < u8::MAX as usize);
         assert!(N > 0);
@@ -120,14 +138,19 @@ impl<T: Hash + PartialEq, H: BuildHasher, const N: usize, const N2: usize> Const
         }
     }
 
-    pub fn push(&mut self, val: T) -> (u8, bool) {
-        let hash = self.hasher.hash_one(&val);
+    pub fn push<I>(&mut self, borrowed: &I) -> (u8, bool)
+    where
+        T: Borrow<I>,
+        I: ?Sized + ToOwned<Owned = T> + Hash + PartialEq,
+    {
+        let hash = self.hasher.hash_one(borrowed);
         if let Some(entry) = self.table.get(hash, |ptr| unsafe {
             self.entries
                 .assume_init_ref()
                 .get_unchecked(*ptr as usize)
                 .data
-                == val
+                .borrow()
+                == borrowed
         }) {
             unsafe {
                 let raw_ptr = self.entries.as_mut_ptr();
@@ -155,7 +178,7 @@ impl<T: Hash + PartialEq, H: BuildHasher, const N: usize, const N2: usize> Const
                         .entries
                         .assume_init_mut()
                         .get_unchecked_mut(self.free_after as usize) = Node {
-                        data: val,
+                        data: borrowed.to_owned(),
                         next: None,
                         prev: self.first,
                     };
@@ -184,7 +207,7 @@ impl<T: Hash + PartialEq, H: BuildHasher, const N: usize, const N2: usize> Const
                         .get_unchecked_mut(last as usize)
                 };
                 let new = Node {
-                    data: val,
+                    data: borrowed.to_owned(),
                     next: None,
                     prev: self.first,
                 };
@@ -226,13 +249,13 @@ fn push_2() {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::*;
     let hash_builder: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
-    let mut lru: ConstLru<_, _, 2, 4> = ConstLru::new(hash_builder);
-    assert_eq!(lru.push(0), (0, true));
-    assert_eq!(lru.push(0), (0, false));
-    assert_eq!(lru.push(1), (1, true));
-    assert_eq!(lru.push(2), (0, true));
-    assert_eq!(lru.push(3), (1, true));
-    assert_eq!(lru.push(4), (0, true));
+    let mut lru: ConstLru<i32, _, 2, 4> = ConstLru::new(hash_builder);
+    assert_eq!(lru.push(&0), (0, true));
+    assert_eq!(lru.push(&0), (0, false));
+    assert_eq!(lru.push(&1), (1, true));
+    assert_eq!(lru.push(&2), (0, true));
+    assert_eq!(lru.push(&3), (1, true));
+    assert_eq!(lru.push(&4), (0, true));
 }
 
 #[test]
@@ -240,12 +263,12 @@ fn push_100() {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::*;
     let hash_builder: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
-    let mut lru: ConstLru<_, _, 100, 200> = ConstLru::new(hash_builder);
+    let mut lru: ConstLru<i32, _, 100, 200> = ConstLru::new(hash_builder);
     for i in 0..100 {
-        assert_eq!(lru.push(i), (i as u8, true));
+        assert_eq!(lru.push(&i), (i as u8, true));
     }
     for i in 0..100 {
-        assert_eq!(lru.push(i + 100), (i as u8, true));
+        assert_eq!(lru.push(&(i + 100)), (i as u8, true));
     }
 }
 
